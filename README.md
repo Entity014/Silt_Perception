@@ -13,6 +13,23 @@
 - **Evaluation System**: เปรียบเทียบผลลัพธ์กับ Ground Truth และคำนวณค่า Mean Absolute Error (MAE)
 - **Result Export**: บันทึกผลการตรวจวัดลงในไฟล์ CSV อัตโนมัติ (`detection_results.csv`)
 
+## Pipeline & หลักการทำงาน (Algorithm Flow)
+
+โปรแกรมใช้เทคนิค Computer Vision ประมวลผลภาพตามลำดับขั้นตอนเพื่อความแม่นยำ:
+
+1. **Auto Light Balance (CLAHE)**: 
+   ปรับความเปรียบต่างและสมดุลแสงของภาพให้สม่ำเสมอ ลดปัญหาแสงสะท้อนและเงาน้ำ
+2. **Tube Projection (ROI Detection)**: 
+   หาขอบซ้าย-ขวาของหลอดแก้วอัตโนมัติ โดยใช้ **Sobel X Edge Detection** หาเส้นขอบแนวตั้ง นำมาบวกทบกัน (Column Projection) และเกลี่ยกราฟด้วย **Moving Average** เพื่อหาตำแหน่งขอบหลอดที่ชัดเจนที่สุด
+3. **GrabCut Segmentation**: 
+   กำจัดพื้นหลัง (Background) ที่อยู่นอกหลอดแก้วออกทั้งหมด ให้เหลือเฉพาะของเหลวและตะกอน
+4. **Auto K-Means Clustering**: 
+   จัดกลุ่มสี (Color Quantization) แบบอัตโนมัติ โดยใช้ **Elbow Method** หาจำนวนกลุ่ม (K) ที่เหมาะสมที่สุด เพื่อแยกชั้นสีของน้ำและตะกอนให้ตัดกันชัดเจน
+5. **Silt Mask Generation**: 
+   สร้าง Binary Mask โดยดึงเฉพาะสีที่เป็นตะกอน (หาจากโหมดสีที่มืดที่สุด) พร้อมใช้ **Morphological Operations** เปิดปิดภาพเพื่อลบจุดรบกวนเล็กๆ (Noise)
+6. **Y-Histogram & Probabilistic Detection**: 
+   รวมพิกเซลของตะกอนในแกน Y เพื่อสร้างกราฟความหนาแน่น (Y-Histogram) จากนั้นคำนวณหาคลัสเตอร์ของตะกอนที่ใหญ่ที่สุดและหา **ขอบบนสุดของตะกอน (Silt Edge)** ด้วยหลักความน่าจะเป็น
+
 ## โครงสร้างโปรเจกต์
 
 - `main.py`: ส่วนบริหารจัดการการทำงานหลัก (Application Entry Point) และการแสดงผล

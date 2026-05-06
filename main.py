@@ -67,8 +67,9 @@ def main(visualize=True):
 
     detector = SiltDetector()
     if visualize:
-        window_name = "Silt Edge Detection"
+        window_name = "Silt Detection Pipeline"
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+        # cv2.resizeWindow(window_name, 1200, 800)
 
     errors = []
     results_data = []
@@ -136,26 +137,93 @@ def main(visualize=True):
                                 FONT, FONT_SCALE, (0, 255, 255), THICKNESS)
 
         if visualize:
-            # ตกแต่งภาพสำหรับแสดงผล (Y-Histogram)
-            cv2.putText(y_hist_display, "Y-Hist (Mask)", (10, 25), 
-                        FONT, FONT_SCALE, (0, 255, 0), THICKNESS)
+            # ดึง intermediate images จาก results
+            roi_img = results['roi_img']
+            grabcut_img = results['grabcut_img']
+            kmeans_img = results['kmeans_img']
+            silt_mask = results['silt_mask']
+
+            # --- CLAHE + เส้น lx/rx + Projection curve ---
+            clahe_vis = balanced_img.copy()
+            proj_smoothed = results['proj_smoothed']
+            proj_max_val = results['proj_max_val']
+            proj_threshold = results['proj_threshold']
+
+            # วาดเส้น lx, rx
+            cv2.line(clahe_vis, (lx, 0), (lx, height), (0, 0, 255), THICKNESS)
+            cv2.line(clahe_vis, (rx, 0), (rx, height), (0, 0, 255), THICKNESS)
+            cv2.putText(clahe_vis, f"lx={lx}", (lx+3, 20), FONT, FONT_SCALE, (0, 0, 255), THICKNESS)
+            cv2.putText(clahe_vis, f"rx={rx}", (rx+3, 20), FONT, FONT_SCALE, (0, 0, 255), THICKNESS)
             
+            # วาด projection curve ลงบนรูปโดยตรง (ใช้พื้นที่ 1/3 ล่าง)
+            if proj_max_val > 0:
+                plot_h = height // 3
+                y_base = height - 10
+                
+                # วาดเส้น threshold (แดง เส้นประ)
+                # thresh_y = int(y_base - (proj_threshold / proj_max_val) * (plot_h - 20))
+                # for x in range(0, width, 15):
+                #     cv2.line(clahe_vis, (x, thresh_y), (min(x+8, width-1), thresh_y), (0, 0, 255), THICKNESS)
+                
+                # วาดกราฟ projection (เขียว)
+                pts = []
+                for x in range(width):
+                    val = proj_smoothed[x] if x < len(proj_smoothed) else 0
+                    y = int(y_base - (val / proj_max_val) * (plot_h - 20))
+                    pts.append((x, y))
+                pts = np.array(pts, dtype=np.int32)
+                # alpha blend กราฟให้ดูเนียนขึ้น
+                overlay = clahe_vis.copy()
+                cv2.polylines(overlay, [pts], isClosed=False, color=(255, 255, 0), thickness=THICKNESS)
+                cv2.addWeighted(overlay, 0.8, clahe_vis, 0.2, 0, clahe_vis)
+
+            # --- ตกแต่ง Y-Histogram ---
             for i, (start_y, end_y) in enumerate(y_clusters):
                 prob = cluster_probs[i]
                 color = (0, 0, 255) if i == best_cluster_idx else (100, 100, 100)
-                cv2.rectangle(y_hist_display, (0, start_y), (y_hist_display.shape[1]-1, end_y), color, 1)
-                cv2.putText(y_hist_display, f"{prob:.2f}", (y_hist_display.shape[1]-40, start_y+15), 
-                            FONT, 0.4, color, 1)
-                
+                cv2.rectangle(y_hist_display, (0, start_y), (y_hist_display.shape[1]-1, end_y), color, THICKNESS)
+                cv2.putText(y_hist_display, f"{prob:.2f}", (y_hist_display.shape[1]-100, start_y+15), 
+                            FONT, FONT_SCALE, color, THICKNESS)
             if silt_edge_y is not None:
                 cv2.line(y_hist_display, (0, silt_edge_y), (y_hist_display.shape[1], silt_edge_y), (255, 255, 0), 2)
 
+            # --- วาดผลลัพธ์ (Pred/GT) บน display_img ---
             if silt_edge_y is not None:
                 cv2.line(display_img, (lx, silt_edge_y), (rx, silt_edge_y), (0, 0, 255), 2)
                 cv2.putText(display_img, f"Pred: {silt_edge_y}", (lx + 5, silt_edge_y - 10), 
                             FONT, FONT_SCALE, (0, 0, 255), THICKNESS)
             
-            cv2.imshow(window_name, display_img)
+            # === สร้างภาพ stack แนวนอน ===
+            def label_img(image, text):
+                bar_h = 25
+                if len(image.shape) == 2:
+                    image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+                bar = np.zeros((bar_h, image.shape[1], 3), dtype=np.uint8)
+                cv2.putText(bar, text, (5, 18), FONT, FONT_SCALE, (255, 255, 255), THICKNESS)
+                return np.vstack([bar, image])
+
+            def resize_to_h(image, target_h):
+                if len(image.shape) == 2:
+                    image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+                h, w = image.shape[:2]
+                new_w = max(1, int(w * target_h / h))
+                return cv2.resize(image, (new_w, target_h))
+
+            row_h = height
+
+            panels = [
+                label_img(resize_to_h(img, row_h), "1.Original"),
+                label_img(resize_to_h(clahe_vis, row_h), "2.CLAHE + PROJECTION"),
+                label_img(resize_to_h(roi_img, row_h), "3.ROI"),
+                label_img(resize_to_h(grabcut_img, row_h), "4.GrabCut"),
+                label_img(resize_to_h(kmeans_img, row_h), "5.K-Means"),
+                label_img(resize_to_h(silt_mask, row_h), "6.Silt Mask"),
+                label_img(resize_to_h(y_hist_display, row_h), "7.Y-Hist"),
+                label_img(resize_to_h(display_img, row_h), "8.Result"),
+            ]
+
+            canvas = np.hstack(panels)
+            cv2.imshow("Silt Detection Pipeline", canvas)
             
         print(f"[{idx+1}/{len(image_files)}] {filename} — Pred: {silt_edge_y}{eval_text} | K={results['auto_k']}")
         
@@ -187,4 +255,4 @@ def main(visualize=True):
     print("\nประมวลผลครบทุกรูปภาพแล้ว!")
 
 if __name__ == "__main__":
-    main(visualize=False)
+    main(visualize=True)

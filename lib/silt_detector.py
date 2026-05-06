@@ -46,7 +46,7 @@ class SiltDetector:
         left_x = max(0, left_x)
         right_x = min(img.shape[1]-1, right_x)
         
-        return left_x, right_x
+        return left_x, right_x, smoothed, max_val, threshold
 
     def segment_kmeans_auto(self, roi_img, min_k=3, max_k=12):
         """
@@ -228,7 +228,7 @@ class SiltDetector:
         balanced_img = self.auto_light_balance(img)
             
         # 2. Tube Projection
-        lx, rx = self.detect_tube_projection(img)
+        lx, rx, smoothed, max_val, threshold = self.detect_tube_projection(img)
         if rx - lx < 50:
             lx, rx = 0, width
             
@@ -256,6 +256,13 @@ class SiltDetector:
         
         return {
             'balanced_img': balanced_img,
+            'proj_smoothed': smoothed,
+            'proj_max_val': max_val,
+            'proj_threshold': threshold,
+            'roi_img': roi_img,
+            'grabcut_img': grabcut_img,
+            'kmeans_img': kmeans_img,
+            'silt_mask': silt_mask,
             'lx': lx,
             'rx': rx,
             'silt_edge_y': silt_edge_y,
