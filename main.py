@@ -18,7 +18,7 @@ def draw_dashed_line(img, pt1, pt2, color, thickness=1, dash_length=10):
               int(pt1[1] + (pt2[1] - pt1[1]) * end_ptr / dist))
         cv2.line(img, p1, p2, color, thickness)
 
-def main(visualize=True):
+def main(visualize=True, save_assets=True):
     data_dir = "data"
     gt_file = os.path.join(data_dir, "ground_truth.csv")
     output_file = "detection_results.csv"
@@ -121,7 +121,7 @@ def main(visualize=True):
             gt_y_orig = ground_truth[filename]['silt_top_y']
             gt_y = int(gt_y_orig * scale)
             
-            if visualize:
+            if visualize or save_assets:
                 # วาดเส้น Ground Truth (สีเขียว เส้นประ)
                 draw_dashed_line(display_img, (lx, gt_y), (rx, gt_y), (0, 255, 0), thickness=2, dash_length=15)
                 cv2.putText(display_img, f"GT: {gt_y}", (lx + 5, gt_y + 20), 
@@ -131,12 +131,12 @@ def main(visualize=True):
                 error = abs(silt_edge_y - gt_y)
                 errors.append(error)
                 eval_text = f" | GT: {gt_y} | Error: {error}"
-                if visualize:
+                if visualize or save_assets:
                     # วาด Error ไว้มุมขวาบน
                     cv2.putText(display_img, f"Error: {error} px", (width - 150, 30), 
                                 FONT, FONT_SCALE, (0, 255, 255), THICKNESS)
 
-        if visualize:
+        if visualize or save_assets:
             # ดึง intermediate images จาก results
             roi_img = results['roi_img']
             grabcut_img = results['grabcut_img']
@@ -211,19 +211,33 @@ def main(visualize=True):
 
             row_h = height
 
-            panels = [
-                label_img(resize_to_h(img, row_h), "1.Original"),
-                label_img(resize_to_h(clahe_vis, row_h), "2.CLAHE + PROJECTION"),
-                label_img(resize_to_h(roi_img, row_h), "3.ROI"),
-                label_img(resize_to_h(grabcut_img, row_h), "4.GrabCut"),
-                label_img(resize_to_h(kmeans_img, row_h), "5.K-Means"),
-                label_img(resize_to_h(silt_mask, row_h), "6.Silt Mask"),
-                label_img(resize_to_h(y_hist_display, row_h), "7.Y-Hist"),
-                label_img(resize_to_h(display_img, row_h), "8.Result"),
+            panel_data = [
+                (img, "1.Original"),
+                (clahe_vis, "2.CLAHE + PROJECTION"),
+                (roi_img, "3.ROI"),
+                (grabcut_img, "4.GrabCut"),
+                (kmeans_img, "5.K-Means"),
+                (silt_mask, "6.Silt Mask"),
+                (y_hist_display, "7.Y-Hist"),
+                (display_img, "8.Result"),
             ]
 
+            panels = []
+            
+            # สร้างโฟลเดอร์ใน assets ตามชื่อไฟล์
+            base_filename = os.path.splitext(filename)[0]
+            save_dir = os.path.join("assets", base_filename)
+            os.makedirs(save_dir, exist_ok=True)
+            
+            for p_img, p_name in panel_data:
+                panel_img = label_img(resize_to_h(p_img, row_h), p_name)
+                panels.append(panel_img)
+                # เซฟรูปลงในโฟลเดอร์ (ใช้ชื่อตาม label)
+                cv2.imwrite(os.path.join(save_dir, f"{p_name}.jpg"), panel_img)
+
             canvas = np.hstack(panels)
-            cv2.imshow("Silt Detection Pipeline", canvas)
+            if visualize:
+                cv2.imshow("Silt Detection Pipeline", canvas)
             
         print(f"[{idx+1}/{len(image_files)}] {filename} — Pred: {silt_edge_y}{eval_text} | K={results['auto_k']}")
         
@@ -255,4 +269,4 @@ def main(visualize=True):
     print("\nประมวลผลครบทุกรูปภาพแล้ว!")
 
 if __name__ == "__main__":
-    main(visualize=True)
+    main(visualize=False, save_assets=True)
