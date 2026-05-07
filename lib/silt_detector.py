@@ -8,10 +8,33 @@ class SiltDetector:
     FONT_SCALE = 0.6
     THICKNESS = 2
 
-    def __init__(self):
-        pass
+    def __init__(self, 
+                 vol_exponent=2.3,
+                 clahe_clip_limit=2.0,
+                 clahe_tile_size=(8, 8),
+                 proj_window=10,
+                 proj_threshold_ratio=0.2,
+                 k_min=3,
+                 k_max=10,
+                 k_offset=2,
+                 grabcut_iters=5,
+                 mask_threshold=45,
+                 y_threshold_ratio=0.1,
+                 pos_weight_exponent=2):
+        self.vol_exponent = vol_exponent
+        self.clahe_clip_limit = clahe_clip_limit
+        self.clahe_tile_size = clahe_tile_size
+        self.proj_window = proj_window
+        self.proj_threshold_ratio = proj_threshold_ratio
+        self.k_min = k_min
+        self.k_max = k_max
+        self.k_offset = k_offset
+        self.grabcut_iters = grabcut_iters
+        self.mask_threshold = mask_threshold
+        self.y_threshold_ratio = y_threshold_ratio
+        self.pos_weight_exponent = pos_weight_exponent
 
-    def estimate_volume(self, silt_y, water_top_y, water_bottom_y):
+    def estimate_volume(self, silt_y, water_top_y, water_bottom_y, exponent=None):
         """
         แปลงจาก pixel เป็นปริมาณ (ml) สำหรับกรวยอิมฮอฟฟ์
         """
@@ -20,8 +43,12 @@ class SiltDetector:
         H = water_bottom_y - water_top_y
         h = water_bottom_y - silt_y
         if H <= 0: return 0
-        # ใช้สูตร (h/H)^3 * 1000 + 100 ตามที่ผู้ใช้ระบุใน main.py
-        vol = 1000.0 * (h / H)**2.3
+        
+        # ถ้าไม่ได้ส่ง exponent มา ให้ใช้ค่าจาก config
+        exp = exponent if exponent is not None else self.vol_exponent
+        
+        # ใช้สูตร (h/H)^exponent * 1000
+        vol = 1000.0 * (h / H)**exp
         return round(vol, 2)
 
     @staticmethod
@@ -42,7 +69,7 @@ class SiltDetector:
     def auto_light_balance(self, image):
         lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        clahe = cv2.createCLAHE(clipLimit=self.clahe_clip_limit, tileGridSize=self.clahe_tile_size)
         cl = clahe.apply(l)
         limg = cv2.merge((cl, a, b))
         balanced_img = cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
@@ -54,7 +81,7 @@ class SiltDetector:
         sobelx_abs = np.abs(sobelx)
         projection = np.sum(sobelx_abs, axis=0)
         
-        window = 10
+        window = self.proj_window
         smoothed = np.convolve(projection, np.ones(window)/window, mode='same')
         
         mid = len(smoothed) // 2
@@ -62,7 +89,7 @@ class SiltDetector:
         peak_right = mid + np.argmax(smoothed[mid:])
         
         max_val = np.max(smoothed)
-        threshold = max_val * 0.2
+        threshold = max_val * self.proj_threshold_ratio
         
         left_x = peak_left
         for i in range(peak_left, -1, -1):
@@ -81,10 +108,11 @@ class SiltDetector:
         
         return left_x, right_x, smoothed, max_val, threshold
 
-    def segment_kmeans_auto(self, roi_img, min_k=3, max_k=12):
+    def segment_kmeans_auto(self, roi_img):
         """
         รัน K-Means และหาค่า K ที่เหมาะสมที่สุดโดยอัตโนมัติ (Elbow Method)
         """
+        min_k, max_k = self.k_min, self.k_max
         Z = roi_img.reshape((-1, 3))
         Z = np.float32(Z)
         criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
@@ -117,7 +145,7 @@ class SiltDetector:
             dist_to_line = np.linalg.norm(vec_p1_to_all - proj_vec, axis=1)
             best_k = ks[np.argmax(dist_to_line)]
         
-        best_k = best_k + 2
+        best_k = best_k + self.k_offset
         ret, label, center = cv2.kmeans(Z, best_k, None, criteria, 10, cv2.KMEANS_PP_CENTERS)
         center = np.uint8(center)
         
@@ -137,7 +165,7 @@ class SiltDetector:
         rect = (2, 2, w-4, h-4)
         
         try:
-            cv2.grabCut(roi_img, mask, rect, bgdModel, fgdModel, 5, cv2.GC_INIT_WITH_RECT)
+            cv2.grabCut(roi_img, mask, rect, bgdModel, fgdModel, self.grabcut_iters, cv2.GC_INIT_WITH_RECT)
             mask2 = np.where((mask==2)|(mask==0), 0, 1).astype('uint8')
             result = roi_img.copy()
             result[mask2 == 0] = [255, 255, 255]
@@ -207,7 +235,7 @@ class SiltDetector:
             mask = cv2.inRange(gray, t_gray, t_gray)
         else:
             blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-            _, mask = cv2.threshold(blurred, 45, 255, cv2.THRESH_BINARY_INV)
+            _, mask = cv2.threshold(blurred, self.mask_threshold, 255, cv2.THRESH_BINARY_INV)
         
         kernel = np.ones((7, 7), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
@@ -217,7 +245,7 @@ class SiltDetector:
 
     def find_silt_edge_probabilistic(self, y_profile, roi_h):
         y_max = np.max(y_profile)
-        y_threshold = y_max * 0.1
+        y_threshold = y_max * self.y_threshold_ratio
         y_clusters = []
         c_start = None
         
@@ -234,7 +262,7 @@ class SiltDetector:
         for start_y, end_y in y_clusters:
             cluster_area = np.sum(y_profile[start_y:end_y+1])
             center_y = (start_y + end_y) / 2
-            pos_weight = (center_y / roi_h) ** 2
+            pos_weight = (center_y / roi_h) ** self.pos_weight_exponent
             scores.append(cluster_area * pos_weight)
             
         total_score = sum(scores)
@@ -242,7 +270,7 @@ class SiltDetector:
             cluster_probs = [s / total_score for s in scores]
         else:
             cluster_probs = [1.0/len(y_clusters)] * len(y_clusters) if y_clusters else []
-
+ 
         best_cluster_idx = np.argmax(cluster_probs) if cluster_probs else -1
         silt_edge_y = None
         
@@ -272,7 +300,7 @@ class SiltDetector:
         grabcut_img = self.segment_grabcut(roi_img)
         
         # 5. K-Means
-        kmeans_img, auto_k, kmeans_min = self.segment_kmeans_auto(grabcut_img, min_k=3, max_k=10)
+        kmeans_img, auto_k, kmeans_min = self.segment_kmeans_auto(grabcut_img)
         kmeans_img = cv2.medianBlur(kmeans_img, 5)
         
         # 6. Histograms
@@ -352,8 +380,6 @@ class SiltDetector:
             gt_vol_vis = gt_data.get('silt_base')
             if gt_vol_vis is None:
                 gt_vol_vis = self.estimate_volume(gt_silt_y, gt_water_top_y, gt_water_bottom_y)
-
-
 
         # --- ตกแต่ง CLAHE + Projection (Panel 2) ---
         clahe_vis = balanced_img.copy()

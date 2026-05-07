@@ -4,13 +4,46 @@ import os
 import csv
 from lib.silt_detector import SiltDetector
 
-
-def main(visualize=True, save_assets=True):
-    data_dir = "data"
-    gt_file = os.path.join(data_dir, "ground_truth.csv")
-    output_file = "detection_results.csv"
-    valid_ext = ('.jpg', '.jpeg', '.png')
+# --- CONFIGURATION PARAMETERS ---
+DEFAULT_CONFIG = {
+    # Pipeline Settings
+    "data_dir": "data",
+    "gt_file": "data/ground_truth.csv",
+    "output_file": "detection_results.csv",
+    "valid_ext": ('.jpg', '.jpeg', '.png'),
+    "max_width": 600,
+    "save_linear_comparison": True,
     
+    # Algorithm Parameters
+    "vol_exponent": 2.3, # ! Need (Cone shape exponent)
+    "vol_exponent_linear": 1.0, # ! Need (Linear shape exponent)
+    "clahe_clip_limit": 2.0,
+    "clahe_tile_size": (8, 8),
+    "proj_window": 10, # ! Need
+    "proj_threshold_ratio": 0.2, # ! Need
+    "k_min": 3, # ! Need
+    "k_max": 10, # ! Need
+    "k_offset": 2, # ! Need
+    "grabcut_iters": 5,
+    "mask_threshold": 45,
+    "y_threshold_ratio": 0.1, # ! Need
+    "pos_weight_exponent": 2,
+}
+# ---------------------------------
+
+
+def main(visualize=True, save_assets=True, config=None):
+    if config is None:
+        config = DEFAULT_CONFIG.copy()
+        
+    # Override visualize/save_assets if provided as arguments
+    config['visualize'] = visualize
+    config['save_assets'] = save_assets
+    
+    data_dir = config["data_dir"]
+    gt_file = config["gt_file"]
+    output_file = config["output_file"]
+    valid_ext = config["valid_ext"]
     
     if not os.path.exists(data_dir):
         print(f"ไม่พบโฟลเดอร์ {data_dir}")
@@ -49,11 +82,17 @@ def main(visualize=True, save_assets=True):
         print(" - กด 'q' เพื่อออก")
     print("--------------------------------------------------")
 
-    detector = SiltDetector()
+    # แยก Config ส่วน Algorithm ให้ SiltDetector
+    algo_params = {k: v for k, v in config.items() if k in [
+        "vol_exponent", "clahe_clip_limit", "clahe_tile_size", "proj_window",
+        "proj_threshold_ratio", "k_min", "k_max", "k_offset", "grabcut_iters",
+        "mask_threshold", "y_threshold_ratio", "pos_weight_exponent"
+    ]}
+    detector = SiltDetector(**algo_params)
+
     if visualize:
         window_name = "Silt Detection Pipeline"
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-        # cv2.resizeWindow(window_name, 1200, 800)
 
     errors = []
     vol_errors = []
@@ -68,32 +107,32 @@ def main(visualize=True, save_assets=True):
             
         height, width = img.shape[:2]
         scale = 1.0
-        if width > 600:
-            scale = 600 / width
+        max_w = config["max_width"]
+        if width > max_w:
+            scale = max_w / width
             img = cv2.resize(img, (int(width * scale), int(height * scale)))
-            height, width = img.shape[:2] # Update height/width after resize
+            height, width = img.shape[:2] 
             
-        # ประมวลผลภาพโดยใช้ SiltDetector
+        # ประมวลผลภาพ
         results = detector.process(img)
         
         silt_edge_y = results['silt_edge_y']
-        balanced_img = results['balanced_img']
-        lx = results['lx']
-        rx = results['rx']
-        y_hist_display = results['y_hist_display']
-        y_clusters = results['y_clusters']
-        cluster_probs = results['cluster_probs']
-        best_cluster_idx = results['best_cluster_idx']
-
-        # คำนวณค่า Pred ใน Original Scale เพื่อเซฟลง CSV
+        
+        # คำนวณค่า Pred ใน Original Scale
         pred_orig = int(silt_edge_y / scale) if silt_edge_y is not None else ""
         
-        pred_vol = ""
+        pred_vol_cone = ""
+        pred_vol_linear = ""
         if filename in ground_truth and pred_orig != "":
             gt_row = ground_truth[filename]
-            pred_vol = detector.estimate_volume(pred_orig, gt_row['water_top_y'], gt_row['water_bottom_y'])
+            # คำนวณตาม Exponent ที่ระบุใน Config
+            pred_vol_cone = detector.estimate_volume(pred_orig, gt_row['water_top_y'], gt_row['water_bottom_y'], exponent=config['vol_exponent'])
+            
+            if config.get("save_linear_comparison", False):
+                pred_vol_linear = detector.estimate_volume(pred_orig, gt_row['water_top_y'], gt_row['water_bottom_y'], exponent=config['vol_exponent_linear'])
+            else:
+                pred_vol_linear = ""
         
-        # เตรียมข้อมูลสำหรับเซฟลง CSV (ให้เหมือน GT แต่เพิ่ม pred_pixel และ pred_volume)
         row = {
             'filename': filename,
             'water_top_y': ground_truth[filename]['water_top_y'] if filename in ground_truth else "",
@@ -101,37 +140,17 @@ def main(visualize=True, save_assets=True):
             'silt_top_y': ground_truth[filename]['silt_top_y'] if filename in ground_truth else "",
             'silt_base': ground_truth[filename]['silt_base'] if filename in ground_truth else "",
             'pred_pixel': pred_orig,
-            'pred_volume': pred_vol
+            'pred_vol_cone': pred_vol_cone,
+            'pred_vol_linear': pred_vol_linear
         }
         results_data.append(row)
 
-        # เปรียบเทียบกับ Ground Truth (Evaluation Logic)
         eval_text = ""
-        if filename in ground_truth:
-            gt_silt_y = int(ground_truth[filename]['silt_top_y'] * scale)
-            gt_water_top_y = int(ground_truth[filename]['water_top_y'] * scale)
-            gt_water_bottom_y = int(ground_truth[filename]['water_bottom_y'] * scale)
-            
-            # ใช้ silt_base จาก GT เป็นปริมาณอ้างอิง (ถ้ามี)
-            gt_vol_vis = ground_truth[filename].get('silt_base')
-            if gt_vol_vis is None:
-                gt_vol_vis = detector.estimate_volume(gt_silt_y, gt_water_top_y, gt_water_bottom_y)
-            
-            if silt_edge_y is not None:
-                error = abs(silt_edge_y - gt_silt_y)
-                errors.append(error)
-                if gt_vol_vis is not None and isinstance(pred_vol, (int, float)):
-                    error_vol = abs(pred_vol - gt_vol_vis)
-                    vol_errors.append(error_vol)
-                    eval_text = f" | GT: {gt_vol_vis:.1f} ml | Err: {error_vol:.1f} ml"
-                else:
-                    eval_text = f" | GT: {gt_silt_y} px | Error: {error} px"
 
-        # Visualization (OOP)
         if visualize or save_assets:
             gt_data = ground_truth.get(filename)
             canvas, panel_images = detector.create_visualization(
-                img, results, pred_vol=pred_vol, gt_data=gt_data, scale=scale
+                img, results, pred_vol=pred_vol_cone, gt_data=gt_data, scale=scale
             )
             
             if save_assets:
@@ -145,7 +164,7 @@ def main(visualize=True, save_assets=True):
                 cv2.imshow(window_name, canvas)
 
             
-        pred_print = f"{pred_vol:.1f} ml" if isinstance(pred_vol, (int, float)) else f"{silt_edge_y} px"
+        pred_print = f"{pred_vol_cone:.1f} ml (cone)" if isinstance(pred_vol_cone, (int, float)) else f"{silt_edge_y} px"
         print(f"[{idx+1}/{len(image_files)}] {filename} — Pred: {pred_print}{eval_text} | K={results['auto_k']}")
         
         if visualize:
@@ -157,12 +176,19 @@ def main(visualize=True, save_assets=True):
     if visualize:
         cv2.destroyAllWindows()
     
-    # บันทึกผลลัพธ์ลง CSV
     with open(output_file, mode='w', newline='', encoding='utf-8') as f:
-        header = ['filename', 'water_top_y', 'water_bottom_y', 'silt_top_y', 'silt_base', 'pred_pixel', 'pred_volume']
+        header = ['filename', 'water_top_y', 'water_bottom_y', 'silt_top_y', 'silt_base', 'pred_pixel', 'pred_vol_cone']
+        if config.get("save_linear_comparison", False):
+            header.append('pred_vol_linear')
+            
         writer = csv.DictWriter(f, fieldnames=header)
         writer.writeheader()
-        writer.writerows(results_data)
+        
+        # กรองข้อมูลให้ตรงกับ header ก่อนเซฟ
+        rows_to_save = []
+        for r in results_data:
+            rows_to_save.append({k: r[k] for k in header})
+        writer.writerows(rows_to_save)
     print(f"\nบันทึกผลลัพธ์ลงใน {output_file} สำเร็จ")
 
     if errors:
@@ -179,4 +205,4 @@ def main(visualize=True, save_assets=True):
     print("\nประมวลผลครบทุกรูปภาพแล้ว!")
 
 if __name__ == "__main__":
-    main(visualize=False, save_assets=True)
+    main(visualize=False, save_assets=False)
