@@ -32,7 +32,8 @@ def main(visualize=True, save_assets=True):
                     ground_truth[row['filename']] = {
                         'water_top_y': int(row['water_top_y']),
                         'water_bottom_y': int(row['water_bottom_y']),
-                        'silt_top_y': int(row['silt_top_y'])
+                        'silt_top_y': int(row['silt_top_y']),
+                        'silt_base': float(row['silt_base'])
                     }
                 except (ValueError, KeyError):
                     continue
@@ -98,6 +99,7 @@ def main(visualize=True, save_assets=True):
             'water_top_y': ground_truth[filename]['water_top_y'] if filename in ground_truth else "",
             'water_bottom_y': ground_truth[filename]['water_bottom_y'] if filename in ground_truth else "",
             'silt_top_y': ground_truth[filename]['silt_top_y'] if filename in ground_truth else "",
+            'silt_base': ground_truth[filename]['silt_base'] if filename in ground_truth else "",
             'pred_pixel': pred_orig,
             'pred_volume': pred_vol
         }
@@ -110,7 +112,10 @@ def main(visualize=True, save_assets=True):
             gt_water_top_y = int(ground_truth[filename]['water_top_y'] * scale)
             gt_water_bottom_y = int(ground_truth[filename]['water_bottom_y'] * scale)
             
-            gt_vol_vis = detector.estimate_volume(gt_silt_y, gt_water_top_y, gt_water_bottom_y)
+            # ใช้ silt_base จาก GT เป็นปริมาณอ้างอิง (ถ้ามี)
+            gt_vol_vis = ground_truth[filename].get('silt_base')
+            if gt_vol_vis is None:
+                gt_vol_vis = detector.estimate_volume(gt_silt_y, gt_water_top_y, gt_water_bottom_y)
             
             if silt_edge_y is not None:
                 error = abs(silt_edge_y - gt_silt_y)
@@ -154,7 +159,7 @@ def main(visualize=True, save_assets=True):
     
     # บันทึกผลลัพธ์ลง CSV
     with open(output_file, mode='w', newline='', encoding='utf-8') as f:
-        header = ['filename', 'water_top_y', 'water_bottom_y', 'silt_top_y', 'pred_pixel', 'pred_volume']
+        header = ['filename', 'water_top_y', 'water_bottom_y', 'silt_top_y', 'silt_base', 'pred_pixel', 'pred_volume']
         writer = csv.DictWriter(f, fieldnames=header)
         writer.writeheader()
         writer.writerows(results_data)
@@ -174,4 +179,4 @@ def main(visualize=True, save_assets=True):
     print("\nประมวลผลครบทุกรูปภาพแล้ว!")
 
 if __name__ == "__main__":
-    main(visualize=True, save_assets=False)
+    main(visualize=False, save_assets=True)

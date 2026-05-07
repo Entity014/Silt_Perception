@@ -348,8 +348,10 @@ class SiltDetector:
             gt_water_top_y = int(gt_data['water_top_y'] * scale)
             gt_water_bottom_y = int(gt_data['water_bottom_y'] * scale)
             
-            # คำนวณ GT Vol สำหรับวาด
-            gt_vol_vis = self.estimate_volume(gt_silt_y, gt_water_top_y, gt_water_bottom_y)
+            # ใช้ silt_base จาก GT เป็นปริมาณอ้างอิง (ถ้ามี)
+            gt_vol_vis = gt_data.get('silt_base')
+            if gt_vol_vis is None:
+                gt_vol_vis = self.estimate_volume(gt_silt_y, gt_water_top_y, gt_water_bottom_y)
 
 
 
