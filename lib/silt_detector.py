@@ -3,8 +3,41 @@ import numpy as np
 import os
 
 class SiltDetector:
+    # UI Constants
+    FONT = cv2.FONT_HERSHEY_SIMPLEX
+    FONT_SCALE = 0.6
+    THICKNESS = 2
+
     def __init__(self):
         pass
+
+    def estimate_volume(self, silt_y, water_top_y, water_bottom_y):
+        """
+        แปลงจาก pixel เป็นปริมาณ (ml) สำหรับกรวยอิมฮอฟฟ์
+        """
+        if water_bottom_y == water_top_y:
+            return 0
+        H = water_bottom_y - water_top_y
+        h = water_bottom_y - silt_y
+        if H <= 0: return 0
+        # ใช้สูตร (h/H)^3 * 1000 + 100 ตามที่ผู้ใช้ระบุใน main.py
+        vol = 1000.0 * (h / H)**2.3
+        return round(vol, 2)
+
+    @staticmethod
+    def draw_dashed_line(img, pt1, pt2, color, thickness=1, dash_length=10):
+        dist = np.sqrt((pt1[0] - pt2[0])**2 + (pt1[1] - pt2[1])**2)
+        if dist == 0: return
+        dashes = int(dist / dash_length)
+        for i in range(dashes):
+            start_ptr = int(i * dash_length)
+            end_ptr = int((i + 0.5) * dash_length)
+            
+            p1 = (int(pt1[0] + (pt2[0] - pt1[0]) * start_ptr / dist),
+                  int(pt1[1] + (pt2[1] - pt1[1]) * start_ptr / dist))
+            p2 = (int(pt1[0] + (pt2[0] - pt1[0]) * end_ptr / dist),
+                  int(pt1[1] + (pt2[1] - pt1[1]) * end_ptr / dist))
+            cv2.line(img, p1, p2, color, thickness)
 
     def auto_light_balance(self, image):
         lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
@@ -273,3 +306,105 @@ class SiltDetector:
             'cluster_probs': cluster_probs,
             'best_cluster_idx': best_cluster_idx
         }
+
+    def label_img(self, image, text):
+        bar_h = 25
+        if len(image.shape) == 2:
+            image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+        bar = np.zeros((bar_h, image.shape[1], 3), dtype=np.uint8)
+        cv2.putText(bar, text, (5, 18), self.FONT, self.FONT_SCALE, (255, 255, 255), self.THICKNESS)
+        return np.vstack([bar, image])
+
+    def resize_to_h(self, image, target_h):
+        if len(image.shape) == 2:
+            image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+        h, w = image.shape[:2]
+        new_w = max(1, int(w * target_h / h))
+        return cv2.resize(image, (new_w, target_h))
+
+    def create_visualization(self, original_img, results, pred_vol=None, gt_data=None, scale=1.0):
+        """
+        สร้างภาพ Visualization รวมทุกขั้นตอน
+        """
+        height, width = original_img.shape[:2]
+        lx, rx = results['lx'], results['rx']
+        silt_edge_y = results['silt_edge_y']
+        balanced_img = results['balanced_img']
+        y_hist_display = results['y_hist_display'].copy()
+        
+        # --- เตรียม Result Image (Panel 8) ---
+        display_img = balanced_img.copy()
+        
+        # วาด Pred
+        if silt_edge_y is not None:
+            cv2.line(display_img, (lx, silt_edge_y), (rx, silt_edge_y), (0, 0, 255), 2)
+            pred_text = f"Pred: {pred_vol:.1f} ml" if isinstance(pred_vol, (int, float)) else f"Pred: {silt_edge_y} px"
+            cv2.putText(display_img, pred_text, (lx + 5, silt_edge_y - 10), 
+                        self.FONT, self.FONT_SCALE, (0, 0, 255), self.THICKNESS)
+
+        # วาด GT
+        if gt_data:
+            gt_silt_y = int(gt_data['silt_top_y'] * scale)
+            gt_water_top_y = int(gt_data['water_top_y'] * scale)
+            gt_water_bottom_y = int(gt_data['water_bottom_y'] * scale)
+            
+            # คำนวณ GT Vol สำหรับวาด
+            gt_vol_vis = self.estimate_volume(gt_silt_y, gt_water_top_y, gt_water_bottom_y)
+
+
+
+        # --- ตกแต่ง CLAHE + Projection (Panel 2) ---
+        clahe_vis = balanced_img.copy()
+        proj_smoothed = results['proj_smoothed']
+        proj_max_val = results['proj_max_val']
+        
+        cv2.line(clahe_vis, (lx, 0), (lx, height), (0, 0, 255), self.THICKNESS)
+        cv2.line(clahe_vis, (rx, 0), (rx, height), (0, 0, 255), self.THICKNESS)
+        
+        if proj_max_val > 0:
+            plot_h = height // 3
+            y_base = height - 10
+            pts = []
+            for x in range(width):
+                val = proj_smoothed[x] if x < len(proj_smoothed) else 0
+                y = int(y_base - (val / proj_max_val) * (plot_h - 20))
+                pts.append((x, y))
+            pts = np.array(pts, dtype=np.int32)
+            overlay = clahe_vis.copy()
+            cv2.polylines(overlay, [pts], isClosed=False, color=(255, 255, 0), thickness=self.THICKNESS)
+            cv2.addWeighted(overlay, 0.8, clahe_vis, 0.2, 0, clahe_vis)
+
+        # --- ตกแต่ง Y-Histogram (Panel 7) ---
+        y_clusters = results['y_clusters']
+        cluster_probs = results['cluster_probs']
+        best_cluster_idx = results['best_cluster_idx']
+        for i, (start_y, end_y) in enumerate(y_clusters):
+            prob = cluster_probs[i]
+            color = (0, 0, 255) if i == best_cluster_idx else (100, 100, 100)
+            cv2.rectangle(y_hist_display, (0, start_y), (y_hist_display.shape[1]-1, end_y), color, self.THICKNESS)
+            cv2.putText(y_hist_display, f"{prob:.2f}", (y_hist_display.shape[1]-100, start_y+15), 
+                        self.FONT, self.FONT_SCALE, color, self.THICKNESS)
+        if silt_edge_y is not None:
+            cv2.line(y_hist_display, (0, silt_edge_y), (y_hist_display.shape[1], silt_edge_y), (255, 255, 0), 2)
+
+        # --- รวมพาเนล ---
+        panel_data = [
+            (original_img, "1.Original"),
+            (clahe_vis, "2.CLAHE + PROJECTION"),
+            (results['roi_img'], "3.ROI"),
+            (results['grabcut_img'], "4.GrabCut"),
+            (results['kmeans_img'], "5.K-Means"),
+            (results['silt_mask'], "6.Silt Mask"),
+            (y_hist_display, "7.Y-Hist"),
+            (display_img, "8.Result"),
+        ]
+
+        panels = []
+        panel_images = {} # สำหรับเซฟแยกไฟล์
+        for p_img, p_name in panel_data:
+            p_vis = self.label_img(self.resize_to_h(p_img, height), p_name)
+            panels.append(p_vis)
+            panel_images[p_name] = p_vis
+
+        canvas = np.hstack(panels)
+        return canvas, panel_images
